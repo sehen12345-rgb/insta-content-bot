@@ -1,0 +1,13 @@
+anthropic>=0.30.0
+praw>=7.7.0
+python-telegram-bot>=21.0
+pillow>=10.0.0
+moviepy>=1.0.3
+gtts>=2.5.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+loguru>=0.7.0
+PyQt6>=6.7.0
+pexelsapi>=1.0.0
+yt-dlp>=2024.0.0
+elevenlabs>=1.0.0
