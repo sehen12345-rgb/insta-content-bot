@@ -440,12 +440,13 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # .env에 SCHEDULE_HOUR가 설정되어 있으면 자동 시작
-    auto_hour = os.getenv("SCHEDULE_HOUR")
-    if auto_hour:
+    # .env에 SCHEDULE_HOUR가 숫자로 설정되어 있으면 자동 시작
+    auto_hour_raw = os.getenv("SCHEDULE_HOUR", "").strip()
+    if auto_hour_raw.isdigit():
         scheduler = get_scheduler()
         scheduler.start()
-        logger.info(f"자동 스케줄러 활성화: {auto_hour}:{os.getenv('SCHEDULE_MINUTE', '0').zfill(2)}")
+        auto_min = os.getenv("SCHEDULE_MINUTE", "0").strip() or "0"
+        logger.info(f"자동 스케줄러 활성화: {int(auto_hour_raw):02d}:{int(auto_min):02d}")
 
     logger.info("봇 폴링 시작 (Ctrl+C로 종료)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

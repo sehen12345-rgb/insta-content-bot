@@ -113,8 +113,27 @@ def create_header_overlay(quote: str, title: str, output_path: str = None) -> st
     return output_path
 
 
+def _check_ffmpeg():
+    """FFmpeg 설치 확인 — 없으면 명확한 오류 메시지"""
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        logger.debug(f"FFmpeg 확인: {exe}")
+        return exe
+    except Exception:
+        pass
+    import shutil
+    if shutil.which("ffmpeg"):
+        return shutil.which("ffmpeg")
+    raise RuntimeError(
+        "FFmpeg를 찾을 수 없습니다.\n"
+        "해결: pip install imageio-ffmpeg  또는  https://ffmpeg.org 에서 설치 후 PATH 추가"
+    )
+
+
 def _image_to_video(image_path: str, duration: float, output_path: str) -> str:
     """이미지를 정지 영상으로 변환"""
+    _check_ffmpeg()
     from moviepy.editor import ImageClip
 
     clip = ImageClip(image_path, duration=duration)
@@ -157,6 +176,7 @@ def create_reels_video(
         return output_path
 
     logger.info("Reels 영상 합성 시작...")
+    _check_ffmpeg()
 
     bg_path = Path(bg_video)
     tmp_video_path = str(OUTPUT_DIR / "_tmp_bg.mp4")
@@ -224,18 +244,27 @@ def create_reels_video(
     if audio_clip is not None:
         final = final.set_audio(audio_clip)
 
-    final.write_videofile(
-        output_path,
-        fps=24,
-        codec="libx264",
-        audio_codec="aac",
-        logger=None,
-    )
-
-    final.close()
-    bg_clip.close()
-    if audio_clip:
-        audio_clip.close()
+    try:
+        final.write_videofile(
+            output_path,
+            fps=24,
+            codec="libx264",
+            audio_codec="aac",
+            logger=None,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"FFmpeg 영상 합성 실패: {e}\n"
+            "확인사항:\n"
+            "  1. pip install imageio-ffmpeg 설치 여부\n"
+            "  2. 배경 영상/이미지 파일이 유효한지\n"
+            "  3. output/ 폴더 쓰기 권한"
+        ) from e
+    finally:
+        final.close()
+        bg_clip.close()
+        if audio_clip:
+            audio_clip.close()
 
     logger.success(f"Reels 영상 저장: {output_path}")
     return output_path

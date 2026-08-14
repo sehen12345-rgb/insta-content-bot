@@ -9,8 +9,8 @@ from modules.paths import OUTPUT_DIR
 
 load_dotenv()
 
-SCHEDULE_HOUR = int(os.getenv("SCHEDULE_HOUR", "9"))
-SCHEDULE_MINUTE = int(os.getenv("SCHEDULE_MINUTE", "0"))
+SCHEDULE_HOUR = int(os.getenv("SCHEDULE_HOUR") or "9")
+SCHEDULE_MINUTE = int(os.getenv("SCHEDULE_MINUTE") or "0")
 
 
 def _run_auto_pipeline():

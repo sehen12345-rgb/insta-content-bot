@@ -1,265 +1,316 @@
 """
-전체 파이프라인 통합 테스트 스크립트.
+전체 파이프라인 실전 테스트 스크립트.
+텔레그램 봇 없이 직접 각 단계를 순차 검증한다.
 
-텔레그램 봇 없이 직접 파이프라인을 실행하여 각 단계를 검증합니다.
-
-사용법:
-    python test_pipeline.py                      # 기본 테스트 ("버뮤다 삼각지대")
-    python test_pipeline.py "다른 주제 텍스트"   # 커스텀 주제
-    python test_pipeline.py --demo               # DEMO_MODE 강제 적용
-
-단계별 출력 결과:
-    output/tts_audio.mp3
-    output/bg_video.mp4 또는 bg_image.jpg
-    output/header_overlay.png
-    output/reels_final.mp4
-    output/cardnews_1~5.png
+실행: python test_pipeline.py
+DEMO_MODE=true 로 실행하면 실제 API 호출 없이 구조만 테스트한다.
 """
 
-import sys
 import os
-import time
-import argparse
+import sys
 from pathlib import Path
-
-# 프로젝트 루트를 sys.path에 추가
-sys.path.insert(0, str(Path(__file__).parent))
-
 from dotenv import load_dotenv
+
 load_dotenv()
 
-from loguru import logger
+# 테스트 소재
+TEST_SOURCE = "주제: 버뮤다 삼각지대"
 
-GREEN  = "\033[92m"
-RED    = "\033[91m"
-YELLOW = "\033[93m"
-BLUE   = "\033[94m"
-RESET  = "\033[0m"
-BOLD   = "\033[1m"
-
-OUTPUT_DIR = Path(__file__).parent / "output"
-OUTPUT_DIR.mkdir(exist_ok=True)
-
-# 테스트용 기본 소재
-DEFAULT_SOURCE_TEXT = """
-주제: 버뮤다 삼각지대
-
-버뮤다 삼각지대는 미국 플로리다, 버뮤다 제도, 푸에르토리코를 잇는 삼각형 해역으로,
-수십 년간 수백 척의 선박과 항공기가 흔적도 없이 사라진 것으로 알려진 미스터리 지역이다.
-1945년에는 미군 어뢰 폭격기 5대(플라이트 19)가 훈련 비행 중 교신이 끊기며 실종됐고,
-구조를 위해 출동한 수상 비행기마저 사라졌다. 과학자들은 메탄 하이드레이트 분출,
-나침반 이상, 갑작스러운 기후 변화를 원인으로 제시하지만 공식적으로 해결된 사례는 없다.
-"""
+PASS = "[OK]"
+FAIL = "[FAIL]"
+SKIP = "[SKIP]"
 
 
-def step(name: str):
-    print(f"\n{BOLD}{BLUE}▶ {name}{RESET}")
+def section(title: str):
+    print(f"\n{'='*55}")
+    print(f"  {title}")
+    print(f"{'='*55}")
 
 
-def ok(msg: str, elapsed: float = 0):
-    t = f"  ({elapsed:.1f}s)" if elapsed > 0 else ""
-    print(f"  {GREEN}✅ {msg}{RESET}{t}")
+def check(label: str, ok: bool, detail: str = ""):
+    icon = PASS if ok else FAIL
+    detail_str = f"  {detail}" if detail else ""
+    print(f"  {icon}  {label}{detail_str}")
+    return ok
 
 
-def fail(msg: str, err: Exception = None):
-    print(f"  {RED}❌ {msg}{RESET}")
-    if err:
-        print(f"     {RED}{err}{RESET}")
+# ── Step 0: 환경 변수 점검 ──────────────────────
+
+def test_env():
+    section("Step 0: 환경 변수 점검")
+    demo = os.getenv("DEMO_MODE", "false").lower() == "true"
+    if demo:
+        print("  [DEMO MODE] 실제 API 호출 없이 구조 테스트")
+
+    keys = {
+        "ANTHROPIC_API_KEY": "Claude 대본 생성",
+        "TELEGRAM_BOT_TOKEN": "텔레그램 봇",
+        "TELEGRAM_CHAT_ID": "텔레그램 채팅 ID",
+        "INSTAGRAM_USERNAME": "인스타그램 아이디",
+        "INSTAGRAM_PASSWORD": "인스타그램 비밀번호",
+    }
+    optional = {
+        "ELEVENLABS_API_KEY": "ElevenLabs TTS (없으면 gTTS 사용)",
+        "PEXELS_API_KEY": "Pexels 배경 영상 (없으면 yt-dlp 사용)",
+    }
+
+    all_ok = True
+    for key, desc in keys.items():
+        val = os.getenv(key, "")
+        ok = bool(val) or demo
+        if not check(f"{key} ({desc})", ok, "(미설정)" if not ok else ""):
+            all_ok = False
+
+    for key, desc in optional.items():
+        val = os.getenv(key, "")
+        icon = PASS if val else SKIP
+        print(f"  {icon}  {key} ({desc})")
+
+    return all_ok or demo
 
 
-def warn(msg: str):
-    print(f"  {YELLOW}⚠️  {msg}{RESET}")
+# ── Step 1: 중복 체크 ───────────────────────────
 
+def test_db():
+    section("Step 1: 소재 중복 체크 (DB)")
+    from modules.db import is_duplicate, get_stats
 
-def check_file(path: str, min_bytes: int = 100) -> bool:
-    p = Path(path)
-    if not p.exists():
+    try:
+        dup = is_duplicate(TEST_SOURCE)
+        stats = get_stats()
+        check("DB 연결", True)
+        check(f"소재 상태: {'중복 (이미 처리됨)' if dup else '신규 소재'}", True)
+        print(f"  현재 DB: 총 {stats['total_uploads']}건 업로드, 소재 {stats['sources']}개")
+        return True
+    except Exception as e:
+        check("DB 연결", False, str(e))
         return False
-    return p.stat().st_size >= min_bytes
 
 
-def run_pipeline(source_text: str) -> dict:
-    """실제 파이프라인 순차 실행"""
+# ── Step 2: 대본 생성 ───────────────────────────
+
+def test_generator():
+    section("Step 2: Claude 대본 생성")
+    from modules.generator import generate_content
+
+    try:
+        content = generate_content(TEST_SOURCE)
+        required = ["reels_header_quote", "reels_header_title", "instagram_caption",
+                    "cardnews_slides", "tts_script", "media_keywords"]
+        ok = all(k in content for k in required)
+        check("JSON 키 완전성", ok)
+        check(f"슬라이드 수", len(content["cardnews_slides"]) == 5,
+              f"{len(content['cardnews_slides'])}장")
+        print(f"\n  제목: {content.get('reels_header_title', '')}")
+        print(f"  TTS 길이: {len(content.get('tts_script', ''))}자")
+        print(f"  미디어 키워드: {content.get('media_keywords', [])}")
+        return content
+    except Exception as e:
+        check("대본 생성", False, str(e))
+        return None
+
+
+# ── Step 3: TTS 생성 ────────────────────────────
+
+def test_tts(content: dict):
+    section("Step 3: TTS 음성 생성")
+    from modules.media import generate_tts
+    from modules.paths import OUTPUT_DIR
+
+    try:
+        path = generate_tts(
+            script=content["tts_script"],
+            output_path=str(OUTPUT_DIR / "test_tts.mp3"),
+        )
+        p = Path(path)
+        size = p.stat().st_size if p.exists() else 0
+        ok = p.exists() and size > 0
+        check("mp3 파일 생성", ok, f"({size:,}B)")
+        return path if ok else None
+    except Exception as e:
+        check("TTS 생성", False, str(e))
+        return None
+
+
+# ── Step 4: 배경 미디어 다운로드 ────────────────
+
+def test_media(content: dict):
+    section("Step 4: 배경 미디어 다운로드")
+    from modules.media import download_background
+    from modules.paths import OUTPUT_DIR
+
+    try:
+        path = download_background(
+            keywords=content["media_keywords"],
+            output_dir=str(OUTPUT_DIR),
+        )
+        p = Path(path)
+        size = p.stat().st_size if p.exists() else 0
+        ok = p.exists() and size > 0
+        check("배경 파일 다운로드", ok, f"({size:,}B) {p.suffix}")
+        return path if ok else None
+    except Exception as e:
+        check("배경 다운로드", False, str(e))
+        return None
+
+
+# ── Step 5: 영상 & 카드뉴스 합성 ────────────────
+
+def test_editor(content: dict, tts_path: str, bg_path: str):
+    section("Step 5: 영상 & 카드뉴스 합성 (FFmpeg)")
+    from modules.editor import create_header_overlay, create_reels_video, create_cardnews
+    from modules.paths import OUTPUT_DIR
 
     results = {}
-    total_start = time.time()
 
-    # ── Step 1: 대본 생성 ──────────────────────────────────────
-    step("Step 1 / 5  |  Claude AI 대본 생성")
     try:
-        from modules.generator import generate_content
-        t = time.time()
-        content = generate_content(source_text)
-        elapsed = time.time() - t
-
-        ok(f"대본 생성 완료", elapsed)
-        print(f"    헤드라인  : {content.get('reels_header_title', '')}")
-        print(f"    인용구    : {content.get('reels_header_quote', '')}")
-        print(f"    TTS 대본  : {content.get('tts_script', '')[:60]}...")
-        print(f"    키워드    : {content.get('media_keywords', [])}")
-
-        results["content"] = content
-    except Exception as e:
-        fail("대본 생성 실패", e)
-        return results
-
-    # ── Step 2: TTS 생성 ──────────────────────────────────────
-    step("Step 2 / 5  |  TTS 음성 생성")
-    try:
-        from modules.media import generate_tts
-        tts_path = str(OUTPUT_DIR / "tts_audio.mp3")
-        t = time.time()
-        generate_tts(content["tts_script"], tts_path)
-        elapsed = time.time() - t
-
-        if check_file(tts_path, min_bytes=100):
-            size_kb = Path(tts_path).stat().st_size // 1024
-            ok(f"TTS 파일 생성 완료: {tts_path} ({size_kb}KB)", elapsed)
-        else:
-            warn("TTS 파일이 비어있음 (DEMO_MODE 또는 오류)")
-
-        results["tts_path"] = tts_path
-    except Exception as e:
-        fail("TTS 생성 실패", e)
-        results["tts_path"] = str(OUTPUT_DIR / "tts_audio.mp3")
-
-    # ── Step 3: 배경 미디어 다운로드 ──────────────────────────
-    step("Step 3 / 5  |  배경 미디어 다운로드")
-    try:
-        from modules.media import download_background
-        keywords = content.get("media_keywords", ["mystery ocean dark"])
-        t = time.time()
-        bg_path = download_background(keywords, str(OUTPUT_DIR))
-        elapsed = time.time() - t
-
-        if check_file(bg_path, min_bytes=100):
-            size_mb = Path(bg_path).stat().st_size / 1024 / 1024
-            ok(f"배경 미디어 다운로드: {Path(bg_path).name} ({size_mb:.1f}MB)", elapsed)
-        else:
-            warn("배경 파일이 비어있음 (DEMO_MODE 또는 fallback)")
-
-        results["bg_path"] = bg_path
-    except Exception as e:
-        fail("배경 미디어 다운로드 실패", e)
-        results["bg_path"] = ""
-
-    # ── Step 4: 헤더 오버레이 + 영상 합성 ─────────────────────
-    step("Step 4 / 5  |  영상 합성 (헤더 오버레이 + Reels MP4)")
-    try:
-        from modules.editor import create_header_overlay, create_reels_video
-
-        overlay_path = str(OUTPUT_DIR / "header_overlay.png")
-        t = time.time()
-        create_header_overlay(
-            quote=content.get("reels_header_quote", "'미스터리가 시작된다'"),
-            title=content.get("reels_header_title", "알 수 없는 실종"),
-            output_path=overlay_path,
+        overlay = create_header_overlay(
+            quote=content["reels_header_quote"],
+            title=content["reels_header_title"],
+            output_path=str(OUTPUT_DIR / "test_overlay.png"),
         )
-        elapsed_overlay = time.time() - t
-        ok(f"헤더 오버레이 생성: {overlay_path}", elapsed_overlay)
-
-        reels_path = str(OUTPUT_DIR / "reels_final.mp4")
-        t = time.time()
-        create_reels_video(
-            bg_video=results.get("bg_path", overlay_path),
-            overlay_img=overlay_path,
-            audio=results.get("tts_path", ""),
-            output_path=reels_path,
-        )
-        elapsed_reels = time.time() - t
-
-        if check_file(reels_path, min_bytes=100):
-            size_mb = Path(reels_path).stat().st_size / 1024 / 1024
-            ok(f"Reels 영상 합성 완료: {reels_path} ({size_mb:.1f}MB)", elapsed_reels)
-        else:
-            warn("Reels 파일이 비어있음 (DEMO_MODE 또는 오류)")
-
-        results["reels_path"] = reels_path
-        results["overlay_path"] = overlay_path
+        p = Path(overlay)
+        check("헤더 오버레이 PNG", p.exists() and p.stat().st_size > 0)
+        results["overlay"] = overlay
     except Exception as e:
-        fail("영상 합성 실패", e)
+        check("헤더 오버레이", False, str(e))
+        results["overlay"] = ""
 
-    # ── Step 5: 카드뉴스 생성 ─────────────────────────────────
-    step("Step 5 / 5  |  카드뉴스 PNG 5장 생성")
     try:
-        from modules.editor import create_cardnews
-        slides = content.get("cardnews_slides", ["슬라이드"] * 5)
-        t = time.time()
-        cardnews_paths = create_cardnews(slides, str(OUTPUT_DIR))
-        elapsed = time.time() - t
-
-        real_files = [p for p in cardnews_paths if check_file(p, min_bytes=100)]
-        ok(f"카드뉴스 {len(real_files)}/5장 생성 완료", elapsed)
-        for p in cardnews_paths:
-            size_kb = Path(p).stat().st_size // 1024 if Path(p).exists() else 0
-            status = "✅" if check_file(p, 100) else "⚠️ "
-            print(f"    {status} {Path(p).name} ({size_kb}KB)")
-
-        results["cardnews_paths"] = cardnews_paths
+        reels = create_reels_video(
+            bg_video=bg_path,
+            overlay_img=results.get("overlay", ""),
+            audio=tts_path,
+            output_path=str(OUTPUT_DIR / "test_reels.mp4"),
+        )
+        p = Path(reels)
+        size_kb = p.stat().st_size // 1024 if p.exists() else 0
+        check("Reels mp4 합성", p.exists() and size_kb > 1, f"({size_kb}KB)")
+        results["reels"] = reels
     except Exception as e:
-        fail("카드뉴스 생성 실패", e)
+        check("Reels 합성", False, str(e))
+        results["reels"] = None
 
-    total_elapsed = time.time() - total_start
-    return results, total_elapsed
+    try:
+        cards = create_cardnews(
+            slides=content["cardnews_slides"],
+            output_dir=str(OUTPUT_DIR),
+        )
+        ok = len(cards) == 5 and all(Path(p).exists() for p in cards)
+        check(f"카드뉴스 {len(cards)}장 생성", ok)
+        results["cardnews"] = cards
+    except Exception as e:
+        check("카드뉴스 생성", False, str(e))
+        results["cardnews"] = []
+
+    return results
 
 
-def print_summary(results: dict, total_elapsed: float):
-    print(f"\n{BOLD}{'='*60}")
-    print(f"  파이프라인 테스트 결과 요약")
-    print(f"{'='*60}{RESET}")
+# ── Step 6: 인스타그램 업로드 ───────────────────
 
-    checks = [
-        ("Claude 대본",    "content" in results),
-        ("TTS 음성",       check_file(results.get("tts_path", ""), 100)),
-        ("배경 미디어",    check_file(results.get("bg_path", ""), 100)),
-        ("헤더 오버레이",  check_file(results.get("overlay_path", ""), 100)),
-        ("Reels 영상",     check_file(results.get("reels_path", ""), 100)),
-        ("카드뉴스 5장",   len([p for p in results.get("cardnews_paths", [])
-                                if check_file(p, 100)]) == 5),
-    ]
+def test_upload(content: dict, reels_path: str, cardnews_paths: list):
+    section("Step 6: 인스타그램 업로드")
+    from modules.uploader import upload_all
 
-    passed = 0
-    for name, ok_flag in checks:
-        icon = f"{GREEN}✅{RESET}" if ok_flag else f"{YELLOW}⚠️ {RESET}"
-        print(f"  {icon}  {name}")
-        if ok_flag:
-            passed += 1
+    caption = f"{content['reels_header_title']}\n\n{content['instagram_caption']}"
 
-    is_demo = os.getenv("DEMO_MODE", "false").lower() == "true"
-    demo_note = f"  {YELLOW}[DEMO_MODE — 실제 파일은 빈 더미]{RESET}" if is_demo else ""
+    try:
+        result = upload_all(
+            reels_path=reels_path,
+            cardnews_paths=cardnews_paths,
+            caption=caption,
+        )
+        check("Reels 업로드", bool(result.get("reels_url")),
+              result.get("reels_url") or "실패")
+        check("카드뉴스 업로드", bool(result.get("carousel_url")),
+              result.get("carousel_url") or "실패")
+        if result["errors"]:
+            print(f"\n  오류 목록:")
+            for err in result["errors"]:
+                print(f"    - {err}")
+        return result
+    except Exception as e:
+        check("업로드", False, str(e))
+        return None
 
-    print(f"\n  총 소요 시간: {total_elapsed:.1f}초")
-    print(f"  결과: {passed}/{len(checks)} 단계 완료")
-    if demo_note:
-        print(demo_note)
-    print(f"\n  output/ 폴더에서 결과물을 확인하세요.")
-    if passed >= 4:
-        print(f"  {GREEN}{BOLD}🎉 파이프라인 정상 동작!{RESET}")
-    else:
-        print(f"  {YELLOW}⚠️  일부 단계 실패 또는 DEMO_MODE 실행됨{RESET}")
 
+# ── Step 7: DB 이력 저장 ────────────────────────
+
+def test_db_save(content: dict, upload_result: dict):
+    section("Step 7: DB 이력 저장 & 중복 등록")
+    from modules.db import mark_processed, save_upload, is_duplicate, get_stats
+
+    try:
+        source_hash = mark_processed(TEST_SOURCE, "", content.get("reels_header_title", ""))
+        check("소재 해시 등록", bool(source_hash), source_hash)
+
+        if upload_result:
+            save_upload(
+                source_hash=source_hash,
+                reels_url=upload_result.get("reels_url", ""),
+                carousel_url=upload_result.get("carousel_url", ""),
+                caption=content.get("instagram_caption", ""),
+                status="success" if not upload_result.get("errors") else "failed",
+            )
+            check("업로드 이력 저장", True)
+
+        dup = is_duplicate(TEST_SOURCE)
+        check("재실행 시 중복 감지", dup, "(같은 소재 재입력 시 차단됨)")
+        stats = get_stats()
+        print(f"\n  최종 DB: 총 {stats['total_uploads']}건 | 성공 {stats['success']} | 실패 {stats['failed']}")
+        return True
+    except Exception as e:
+        check("DB 저장", False, str(e))
+        return False
+
+
+# ── 메인 ────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="파이프라인 통합 테스트")
-    parser.add_argument("source", nargs="?", default=DEFAULT_SOURCE_TEXT,
-                        help="테스트할 소재 텍스트 (기본: 버뮤다 삼각지대)")
-    parser.add_argument("--demo", action="store_true",
-                        help="DEMO_MODE 강제 적용 (API 호출 없이 테스트)")
-    args = parser.parse_args()
+    print("\n" + "="*55)
+    print("  insta-content-bot 전체 파이프라인 테스트")
+    print(f"  소재: {TEST_SOURCE}")
+    print("="*55)
 
-    if args.demo:
-        os.environ["DEMO_MODE"] = "true"
+    env_ok = test_env()
+    if not env_ok:
+        print("\n필수 환경 변수가 없습니다.")
+        print("  옵션 1: .env 파일에 실제 API 키 입력")
+        print("  옵션 2: DEMO_MODE=true python test_pipeline.py")
+        sys.exit(1)
 
-    is_demo = os.getenv("DEMO_MODE", "false").lower() == "true"
+    test_db()
 
-    print(f"\n{BOLD}{'='*60}")
-    print(f"  insta-content-bot 파이프라인 통합 테스트")
-    print(f"  모드: {'DEMO (API 호출 없음)' if is_demo else '실제 API 연동'}")
-    print(f"{'='*60}{RESET}")
-    print(f"\n소재 (앞 80자): {args.source.strip()[:80]}...")
+    content = test_generator()
+    if not content:
+        print("\n대본 생성 실패. 테스트 중단.")
+        sys.exit(1)
 
-    results, elapsed = run_pipeline(args.source.strip())
-    print_summary(results, elapsed)
+    tts_path = test_tts(content)
+    if not tts_path:
+        print("\nTTS 생성 실패. 테스트 중단.")
+        sys.exit(1)
+
+    bg_path = test_media(content)
+    if not bg_path:
+        print("\n배경 미디어 다운로드 실패. 테스트 중단.")
+        sys.exit(1)
+
+    editor_results = test_editor(content, tts_path, bg_path)
+    reels_path = editor_results.get("reels")
+    cardnews_paths = editor_results.get("cardnews", [])
+
+    upload_result = None
+    if reels_path and cardnews_paths:
+        upload_result = test_upload(content, reels_path, cardnews_paths)
+    else:
+        print("\n[SKIP] 영상/카드뉴스 없어 업로드 건너뜀")
+
+    test_db_save(content, upload_result)
+
+    section("테스트 완료")
+    print("  output/ 폴더에서 생성된 파일을 확인하세요.")
+    print()
 
 
 if __name__ == "__main__":
