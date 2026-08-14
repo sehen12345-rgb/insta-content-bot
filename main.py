@@ -29,6 +29,9 @@ from modules.scraper import get_trending_posts
 from modules.generator import generate_content
 from modules.media import generate_tts, download_background
 from modules.editor import create_header_overlay, create_reels_video, create_cardnews
+from modules.uploader import upload_all
+from modules.db import is_duplicate, mark_processed, save_upload, get_recent_uploads, get_stats
+from modules.scheduler import get_scheduler
 
 load_dotenv()
 
@@ -46,12 +49,18 @@ async def run_pipeline(
     context: ContextTypes.DEFAULT_TYPE,
     source_text: str,
     source_url: str = "",
+    title: str = "",
 ) -> dict | None:
     """전체 파이프라인 실행 (generator → media → editor)"""
     chat_id = update.effective_chat.id
 
     async def send_status(text: str):
         await context.bot.send_message(chat_id=chat_id, text=text)
+
+    # 중복 소재 체크
+    if is_duplicate(source_text):
+        await send_status("⚠️ 이미 처리한 소재입니다. 다른 소재를 선택해주세요.")
+        return None
 
     try:
         # Step 1: 대본 생성
@@ -97,11 +106,15 @@ async def run_pipeline(
             output_dir=str(OUTPUT_DIR),
         )
 
+        # 소재 중복 방지 등록
+        source_hash = mark_processed(source_text, source_url, title or content.get("reels_header_title", ""))
+
         return {
             "content": content,
             "reels_path": reels_path,
             "cardnews_paths": cardnews_paths,
             "tts_path": tts_path,
+            "source_hash": source_hash,
         }
 
     except Exception as e:
@@ -180,12 +193,83 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 *인스타그램 콘텐츠 자동 생성 봇*\n\n"
         "📌 *사용 방법:*\n"
         "• `/trending` — Reddit 트렌딩 소재 수집\n"
+        "• `/stats` — 업로드 통계 및 최근 이력\n"
+        "• `/schedule HH:MM` — 자동 실행 시각 설정 (예: `/schedule 09:00`)\n"
+        "• `/schedule stop` — 자동 실행 중지\n"
         "• 텍스트/링크 직접 입력 → 콘텐츠 자동 생성\n\n"
         "🔧 *파이프라인:*\n"
-        "Reddit 소재 → Claude 대본 → TTS → 배경 영상 → 영상/카드뉴스 합성\n\n"
+        "Reddit 소재 → Claude 대본 → TTS → 배경 영상 → 영상/카드뉴스 합성 → 인스타 업로드\n\n"
         "시작하려면 `/trending` 을 입력하거나 소재를 직접 붙여넣으세요!"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/stats 명령어: 업로드 통계 + 최근 이력"""
+    stats = get_stats()
+    recents = get_recent_uploads(limit=5)
+
+    lines = [
+        "📊 *업로드 통계*\n",
+        f"• 전체 업로드: {stats['total_uploads']}회",
+        f"• 성공: {stats['success']}회 | 실패: {stats['failed']}회",
+        f"• 수집 소재 수: {stats['sources']}개\n",
+    ]
+
+    scheduler = get_scheduler()
+    if scheduler.is_running:
+        next_run = scheduler.get_next_run()
+        lines.append(f"⏰ 다음 자동 실행: {next_run}")
+    else:
+        lines.append("⏰ 자동 실행: 비활성화")
+
+    if recents:
+        lines.append("\n📋 *최근 업로드 5건*")
+        for r in recents:
+            date = r["uploaded_at"][:16]
+            title = (r.get("title") or "")[:30]
+            status_icon = "✅" if r["status"] == "success" else "❌"
+            lines.append(f"{status_icon} `{date}` {title}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/schedule HH:MM | stop — 자동 실행 스케줄 설정"""
+    args = context.args
+    scheduler = get_scheduler()
+
+    if not args:
+        status = "실행 중" if scheduler.is_running else "중지됨"
+        next_run = scheduler.get_next_run() or "없음"
+        await update.message.reply_text(
+            f"⏰ *스케줄러 상태*: {status}\n다음 실행: {next_run}\n\n"
+            "사용법: `/schedule 09:00` 또는 `/schedule stop`",
+            parse_mode="Markdown",
+        )
+        return
+
+    cmd = args[0].lower()
+
+    if cmd == "stop":
+        scheduler.stop()
+        await update.message.reply_text("⏹️ 자동 실행 스케줄러가 중지되었습니다.")
+        return
+
+    # HH:MM 파싱
+    try:
+        h, m = map(int, cmd.split(":"))
+        assert 0 <= h <= 23 and 0 <= m <= 59
+    except Exception:
+        await update.message.reply_text("❌ 형식 오류. 예: `/schedule 09:00`", parse_mode="Markdown")
+        return
+
+    if scheduler.is_running:
+        scheduler.update_schedule(h, m)
+        await update.message.reply_text(f"✅ 스케줄 변경: 매일 {h:02d}:{m:02d} 자동 실행")
+    else:
+        scheduler.start(hour=h, minute=m)
+        await update.message.reply_text(f"✅ 스케줄러 시작: 매일 {h:02d}:{m:02d} 자동 실행")
 
 
 async def cmd_trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -247,6 +331,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     result = await run_pipeline(update, context, source_text, source_url)
     if result:
+        context.user_data["last_pipeline_result"] = result
         await send_results(update, context, result)
 
 
@@ -274,17 +359,58 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
 
-        result = await run_pipeline(update, context, source_text, source_url)
+        result = await run_pipeline(update, context, source_text, source_url, title=post.get("title", ""))
         if result:
+            context.user_data["last_pipeline_result"] = result
             await send_results(update, context, result)
 
     elif data == "approve_upload":
-        await query.edit_message_text(
-            "✅ *업로드 완료 처리됨*\n\n"
-            "실제 인스타그램 API 업로드는 추후 연동 예정입니다.\n"
-            "output/ 폴더에서 파일을 확인하세요.",
-            parse_mode="Markdown",
-        )
+        last_result = context.user_data.get("last_pipeline_result")
+        if not last_result:
+            await query.edit_message_text("❌ 업로드할 콘텐츠가 없습니다. 파이프라인을 먼저 실행해주세요.")
+            return
+
+        await query.edit_message_text("📤 *인스타그램 업로드 중...*", parse_mode="Markdown")
+
+        content = last_result["content"]
+        caption = f"{content['reels_header_title']}\n\n{content['instagram_caption']}"
+
+        try:
+            upload_result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: upload_all(
+                    reels_path=last_result["reels_path"],
+                    cardnews_paths=last_result["cardnews_paths"],
+                    caption=caption,
+                ),
+            )
+
+            status = "failed" if upload_result["errors"] else "success"
+            save_upload(
+                source_hash=last_result.get("source_hash", ""),
+                reels_url=upload_result.get("reels_url", ""),
+                carousel_url=upload_result.get("carousel_url", ""),
+                caption=caption,
+                status=status,
+            )
+
+            if upload_result["errors"]:
+                error_msg = "\n".join(upload_result["errors"])
+                await query.edit_message_text(
+                    f"⚠️ *일부 업로드 실패*\n\n{error_msg}",
+                    parse_mode="Markdown",
+                )
+            else:
+                lines = ["✅ *인스타그램 업로드 완료!*\n"]
+                if upload_result["reels_url"]:
+                    lines.append(f"🎬 Reels: {upload_result['reels_url']}")
+                if upload_result["carousel_url"]:
+                    lines.append(f"📰 카드뉴스: {upload_result['carousel_url']}")
+                await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"업로드 오류: {e}")
+            await query.edit_message_text(f"❌ *업로드 실패*\n\n{e}", parse_mode="Markdown")
 
     elif data == "reject_content":
         await query.edit_message_text(
@@ -309,8 +435,17 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("trending", cmd_trending))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # .env에 SCHEDULE_HOUR가 설정되어 있으면 자동 시작
+    auto_hour = os.getenv("SCHEDULE_HOUR")
+    if auto_hour:
+        scheduler = get_scheduler()
+        scheduler.start()
+        logger.info(f"자동 스케줄러 활성화: {auto_hour}:{os.getenv('SCHEDULE_MINUTE', '0').zfill(2)}")
 
     logger.info("봇 폴링 시작 (Ctrl+C로 종료)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
