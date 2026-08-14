@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from loguru import logger
 from dotenv import load_dotenv
+from modules.paths import OUTPUT_DIR as _OUTPUT_DIR
 
 from telegram import (
     Update,
@@ -37,8 +38,7 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-OUTPUT_DIR = Path(__file__).parent / "output"
-OUTPUT_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR = _OUTPUT_DIR
 
 # ──────────────────────────────────────────────
 # 파이프라인 실행 함수

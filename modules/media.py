@@ -5,6 +5,7 @@ import requests
 from pathlib import Path
 from loguru import logger
 from dotenv import load_dotenv
+from modules.paths import OUTPUT_DIR
 
 load_dotenv()
 
@@ -13,9 +14,6 @@ TTS_PROVIDER = os.getenv("TTS_PROVIDER", "gtts").lower()
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
-
-OUTPUT_DIR = Path(__file__).parent.parent / "output"
-OUTPUT_DIR.mkdir(exist_ok=True)
 
 
 # ──────────────────────────────────────────────

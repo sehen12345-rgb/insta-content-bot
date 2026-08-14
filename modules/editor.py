@@ -4,14 +4,11 @@ import os
 from pathlib import Path
 from loguru import logger
 from dotenv import load_dotenv
+from modules.paths import OUTPUT_DIR, TEMPLATES_DIR
 
 load_dotenv()
 
 DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() == "true"
-
-OUTPUT_DIR = Path(__file__).parent.parent / "output"
-TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
-OUTPUT_DIR.mkdir(exist_ok=True)
 
 # 색상 팔레트
 COLOR_BG_DARK = (15, 15, 26)        # #0f0f1a

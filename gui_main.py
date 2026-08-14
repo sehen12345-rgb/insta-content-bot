@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 from loguru import logger
 
+from modules.paths import OUTPUT_DIR
 from gui.main_window import MainWindow
 from gui.styles.theme import apply_theme
 
@@ -35,7 +36,7 @@ def main():
         colorize=True,
     )
     logger.add(
-        "output/bot.log",
+        str(OUTPUT_DIR / "bot.log"),
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name} | {message}",
         level="INFO",
         rotation="10 MB",

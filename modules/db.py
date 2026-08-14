@@ -5,8 +5,9 @@ import hashlib
 from pathlib import Path
 from datetime import datetime
 from loguru import logger
+from modules.paths import OUTPUT_DIR
 
-DB_PATH = Path(__file__).parent.parent / "output" / "content_history.db"
+DB_PATH = OUTPUT_DIR / "content_history.db"
 
 
 def _get_conn() -> sqlite3.Connection:

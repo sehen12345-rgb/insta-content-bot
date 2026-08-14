@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from loguru import logger
 from dotenv import load_dotenv
+from modules.paths import OUTPUT_DIR
 
 load_dotenv()
 
@@ -12,8 +13,7 @@ DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() == "true"
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
 INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "")
 
-# 세션 파일 경로
-SESSION_FILE = Path(__file__).parent.parent / "output" / "instagram_session.json"
+SESSION_FILE = OUTPUT_DIR / "instagram_session.json"
 
 
 def _get_client():

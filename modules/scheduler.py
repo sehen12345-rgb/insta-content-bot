@@ -5,12 +5,12 @@ from datetime import datetime
 from pathlib import Path
 from loguru import logger
 from dotenv import load_dotenv
+from modules.paths import OUTPUT_DIR
 
 load_dotenv()
 
-SCHEDULE_HOUR = int(os.getenv("SCHEDULE_HOUR", "9"))    # 기본 오전 9시
+SCHEDULE_HOUR = int(os.getenv("SCHEDULE_HOUR", "9"))
 SCHEDULE_MINUTE = int(os.getenv("SCHEDULE_MINUTE", "0"))
-OUTPUT_DIR = Path(__file__).parent.parent / "output"
 
 
 def _run_auto_pipeline():
