@@ -125,12 +125,19 @@ class PipelineWorker(QThread):
         try:
             result = {}
 
-            # ── Step 0: 스크래핑 (수동 실행 시 입력 텍스트 사용) ──
+            # ── Step 0: 중복 체크 + 소재 확인 ──
             self.step_changed.emit(0, "active")
             self.status_changed.emit("소재 확인 중...")
             self.progress_updated.emit(5)
             source_text = self._source_text
             source_url = self._source_url
+
+            # 중복 소재 감지
+            from modules.db import is_duplicate, mark_processed
+            if is_duplicate(source_text):
+                logger.warning("중복 소재 감지 — 이미 처리된 소재입니다. 계속 진행합니다.")
+                self.status_changed.emit("⚠ 중복 소재 — 계속 진행")
+
             self.step_changed.emit(0, "done")
             self.progress_updated.emit(20)
 
@@ -191,6 +198,10 @@ class PipelineWorker(QThread):
             self.step_changed.emit(3, "done")
             self.progress_updated.emit(100)
 
+            # 소재를 DB에 등록 (중복 방지용)
+            source_hash = mark_processed(source_text, source_url)
+            result["source_hash"] = source_hash
+
             self.status_changed.emit("파이프라인 완료!")
             logger.success("PipelineWorker: 파이프라인 완료")
             self.pipeline_completed.emit(result)
@@ -226,4 +237,105 @@ class TrendingWorker(QThread):
             self.posts_fetched.emit(posts)
         except Exception as e:
             logger.error(f"TrendingWorker 오류: {e}")
+            self.error_occurred.emit(str(e))
+
+
+# ──────────────────────────────────────────────
+# UploadWorker: 인스타그램 업로드
+# ──────────────────────────────────────────────
+
+class UploadWorker(QThread):
+    """
+    인스타그램 Reels + 카드뉴스 업로드를 QThread에서 실행.
+
+    Signals:
+        status_changed(str): 진행 상태 메시지
+        upload_completed(dict): {"reels_url": str, "carousel_url": str, "errors": list}
+        error_occurred(str): 오류 메시지
+    """
+
+    status_changed = pyqtSignal(str)
+    upload_completed = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(
+        self,
+        reels_path: str,
+        cardnews_paths: list,
+        caption: str,
+        source_hash: str = "",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._reels_path = reels_path
+        self._cardnews_paths = cardnews_paths
+        self._caption = caption
+        self._source_hash = source_hash
+
+    def run(self):
+        try:
+            from modules.uploader import upload_all
+            from modules.db import save_upload
+
+            self.status_changed.emit("인스타그램 업로드 중...")
+            logger.info("UploadWorker: 업로드 시작")
+
+            result = upload_all(
+                reels_path=self._reels_path,
+                cardnews_paths=self._cardnews_paths,
+                caption=self._caption,
+            )
+
+            status = "failed" if result.get("errors") else "success"
+            if self._source_hash:
+                save_upload(
+                    source_hash=self._source_hash,
+                    reels_url=result.get("reels_url", ""),
+                    carousel_url=result.get("carousel_url", ""),
+                    caption=self._caption,
+                    status=status,
+                )
+
+            if result.get("errors"):
+                logger.error(f"UploadWorker 오류: {result['errors']}")
+                self.status_changed.emit(f"업로드 오류: {result['errors']}")
+            else:
+                logger.success(
+                    f"UploadWorker: 완료! Reels={result.get('reels_url')} "
+                    f"Carousel={result.get('carousel_url')}"
+                )
+                self.status_changed.emit("업로드 완료!")
+
+            self.upload_completed.emit(result)
+
+        except Exception as e:
+            logger.error(f"UploadWorker 오류: {e}")
+            self.error_occurred.emit(str(e))
+
+
+# ──────────────────────────────────────────────
+# HistoryWorker: DB 업로드 이력 조회
+# ──────────────────────────────────────────────
+
+class HistoryWorker(QThread):
+    """
+    DB에서 업로드 이력과 통계를 조회.
+
+    Signals:
+        history_fetched(list, dict): (uploads 리스트, stats 딕셔너리)
+        error_occurred(str): 오류 메시지
+    """
+
+    history_fetched = pyqtSignal(list, dict)
+    error_occurred = pyqtSignal(str)
+
+    def run(self):
+        try:
+            from modules.db import get_recent_uploads, get_stats
+            uploads = get_recent_uploads(30)
+            stats = get_stats()
+            logger.debug(f"HistoryWorker: {len(uploads)}건 이력 조회 완료")
+            self.history_fetched.emit(uploads, stats)
+        except Exception as e:
+            logger.error(f"HistoryWorker 오류: {e}")
             self.error_occurred.emit(str(e))

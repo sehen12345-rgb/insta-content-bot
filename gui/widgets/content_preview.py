@@ -16,9 +16,12 @@ from PyQt6.QtWidgets import (
     QFrame,
     QSizePolicy,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QPixmap, QFont
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QPixmap, QFont, QColor
 
 OUTPUT_DIR = Path(__file__).parent.parent.parent / "output"
 
@@ -86,8 +89,16 @@ class ContentPreview(QWidget):
     생성된 결과물 미리보기 위젯.
     - 캡션 텍스트 표시
     - 카드뉴스 썸네일 미리보기
-    - [파일 열기] 버튼 (output 폴더 탐색기)
+    - 인스타그램 업로드 버튼
+    - 업로드 이력 탭
+
+    Signals:
+        upload_requested(str, list, str, str): (reels_path, cardnews_paths, caption, source_hash)
+        history_refresh_requested(): 이력 새로고침 요청
     """
+
+    upload_requested = pyqtSignal(str, list, str, str)
+    history_refresh_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -170,10 +181,11 @@ class ContentPreview(QWidget):
 
         tabs.addTab(cardnews_tab, "카드뉴스")
 
-        # 탭 3: 영상 정보
+        # 탭 3: 영상 정보 + 업로드
         video_tab = QWidget()
         video_layout = QVBoxLayout(video_tab)
         video_layout.setContentsMargins(8, 8, 8, 8)
+        video_layout.setSpacing(10)
 
         self._video_info = QLabel("파이프라인 실행 후 영상 정보가 표시됩니다.")
         self._video_info.setWordWrap(True)
@@ -181,13 +193,59 @@ class ContentPreview(QWidget):
         self._video_info.setAlignment(Qt.AlignmentFlag.AlignTop)
         video_layout.addWidget(self._video_info)
 
+        btn_row = QHBoxLayout()
         self._open_video_btn = QPushButton("▶ 영상 재생")
         self._open_video_btn.setEnabled(False)
         self._open_video_btn.clicked.connect(self._open_video)
-        video_layout.addWidget(self._open_video_btn)
-        video_layout.addStretch()
+        btn_row.addWidget(self._open_video_btn)
 
+        self._upload_btn = QPushButton("인스타그램 업로드")
+        self._upload_btn.setObjectName("primary")
+        self._upload_btn.setEnabled(False)
+        self._upload_btn.clicked.connect(self._on_upload_clicked)
+        btn_row.addWidget(self._upload_btn)
+        video_layout.addLayout(btn_row)
+
+        # 업로드 상태 라벨
+        self._upload_status = QLabel("")
+        self._upload_status.setObjectName("subtitle")
+        self._upload_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._upload_status.setWordWrap(True)
+        video_layout.addWidget(self._upload_status)
+
+        video_layout.addStretch()
         tabs.addTab(video_tab, "Reels 영상")
+
+        # 탭 4: 업로드 이력
+        history_tab = QWidget()
+        history_layout = QVBoxLayout(history_tab)
+        history_layout.setContentsMargins(8, 8, 8, 8)
+        history_layout.setSpacing(8)
+
+        # 통계 라벨
+        self._stats_label = QLabel("통계: —")
+        self._stats_label.setObjectName("subtitle")
+        history_layout.addWidget(self._stats_label)
+
+        # 새로고침 버튼
+        refresh_btn = QPushButton("이력 새로고침")
+        refresh_btn.setFixedWidth(130)
+        refresh_btn.clicked.connect(self.history_refresh_requested.emit)
+        history_layout.addWidget(refresh_btn)
+
+        # 이력 테이블
+        self._history_table = QTableWidget(0, 5)
+        self._history_table.setHorizontalHeaderLabels(["업로드 시각", "제목", "상태", "Reels URL", "Carousel URL"])
+        self._history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._history_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self._history_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self._history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._history_table.verticalHeader().setVisible(False)
+        self._history_table.setAlternatingRowColors(True)
+        history_layout.addWidget(self._history_table)
+
+        tabs.addTab(history_tab, "업로드 이력")
 
     # ──────────────────────────────────────────────
     # 공개 API
@@ -233,9 +291,12 @@ class ContentPreview(QWidget):
                 f"경로: {p}"
             )
             self._open_video_btn.setEnabled(True)
+            self._upload_btn.setEnabled(True)
+            self._upload_status.setText("업로드 버튼을 눌러 인스타그램에 게시하세요.")
         else:
             self._video_info.setText("영상 파일이 생성되지 않았거나 데모 모드입니다.")
             self._open_video_btn.setEnabled(False)
+            self._upload_btn.setEnabled(False)
 
     def clear_preview(self):
         """미리보기 초기화"""
@@ -245,7 +306,46 @@ class ContentPreview(QWidget):
         self._slides_edit.clear()
         self._video_info.setText("파이프라인 실행 후 영상 정보가 표시됩니다.")
         self._open_video_btn.setEnabled(False)
+        self._upload_btn.setEnabled(False)
+        self._upload_status.setText("")
         self._current_result = None
+
+    def set_upload_status(self, msg: str, success: bool = False):
+        """업로드 상태 메시지 갱신 (MainWindow에서 호출)"""
+        self._upload_status.setText(msg)
+        if success:
+            self._upload_btn.setEnabled(False)
+            self._upload_btn.setText("업로드 완료")
+
+    def update_history(self, uploads: list, stats: dict):
+        """업로드 이력 및 통계 갱신 (HistoryWorker 결과 수신)"""
+        total = stats.get("total_uploads", 0)
+        success = stats.get("success", 0)
+        sources = stats.get("sources", 0)
+        self._stats_label.setText(
+            f"총 업로드: {total}건 | 성공: {success}건 | 소재: {sources}건"
+        )
+
+        self._history_table.setRowCount(0)
+        for row_idx, item in enumerate(uploads):
+            self._history_table.insertRow(row_idx)
+
+            uploaded_at = item.get("uploaded_at", "")[:19].replace("T", " ")
+            title = item.get("title") or item.get("source_url") or "—"
+            status = item.get("status", "—")
+            reels_url = item.get("reels_url") or "—"
+            carousel_url = item.get("carousel_url") or "—"
+
+            self._history_table.setItem(row_idx, 0, QTableWidgetItem(uploaded_at))
+            self._history_table.setItem(row_idx, 1, QTableWidgetItem(title[:60]))
+            status_cell = QTableWidgetItem(status)
+            if status == "success":
+                status_cell.setForeground(QColor("#26a69a"))
+            else:
+                status_cell.setForeground(QColor("#e1306c"))
+            self._history_table.setItem(row_idx, 2, status_cell)
+            self._history_table.setItem(row_idx, 3, QTableWidgetItem(reels_url))
+            self._history_table.setItem(row_idx, 4, QTableWidgetItem(carousel_url))
 
     def _open_output_folder(self):
         """output 폴더를 탐색기로 열기"""
@@ -261,6 +361,24 @@ class ContentPreview(QWidget):
                 subprocess.run(["xdg-open", str(path)], check=True)
         except Exception as e:
             pass
+
+    def _on_upload_clicked(self):
+        """업로드 버튼 클릭 → 시그널 발송"""
+        if self._current_result is None:
+            return
+        content = self._current_result.get("content", {})
+        caption = (
+            f"{content.get('reels_header_title', '')}\n\n"
+            f"{content.get('instagram_caption', '')}"
+        ).strip()
+        reels_path = self._current_result.get("reels_path", "")
+        cardnews_paths = self._current_result.get("cardnews_paths", [])
+        source_hash = self._current_result.get("source_hash", "")
+
+        self._upload_btn.setEnabled(False)
+        self._upload_btn.setText("업로드 중...")
+        self._upload_status.setText("인스타그램에 업로드 중입니다...")
+        self.upload_requested.emit(reels_path, cardnews_paths, caption, source_hash)
 
     def _open_video(self):
         """생성된 Reels 영상 재생"""

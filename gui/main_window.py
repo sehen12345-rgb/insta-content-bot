@@ -18,7 +18,7 @@ from PyQt6.QtGui import QFont, QIcon
 from gui.widgets.pipeline_panel import PipelinePanel
 from gui.widgets.content_preview import ContentPreview
 from gui.widgets.log_widget import LogWidget
-from gui.workers import BotWorker, PipelineWorker, TrendingWorker
+from gui.workers import BotWorker, PipelineWorker, TrendingWorker, UploadWorker, HistoryWorker
 from loguru import logger
 
 
@@ -48,7 +48,10 @@ class MainWindow(QMainWindow):
         self._bot_worker: BotWorker | None = None
         self._pipeline_worker: PipelineWorker | None = None
         self._trending_worker: TrendingWorker | None = None
+        self._upload_worker: UploadWorker | None = None
+        self._history_worker: HistoryWorker | None = None
         self._bot_running = False
+        self._scheduler = None  # ContentScheduler 싱글톤
 
         self._setup_window()
         self._setup_ui()
@@ -157,9 +160,17 @@ class MainWindow(QMainWindow):
         return header
 
     def _connect_signals(self):
-        """PipelinePanel 시그널 연결"""
+        """PipelinePanel, ContentPreview 시그널 연결"""
+        # 파이프라인 제어
         self._pipeline_panel.run_requested.connect(self._on_run_requested)
         self._pipeline_panel.trending_requested.connect(self._on_trending_requested)
+        # 스케줄러 제어
+        self._pipeline_panel.scheduler_start_requested.connect(self._on_scheduler_start)
+        self._pipeline_panel.scheduler_stop_requested.connect(self._on_scheduler_stop)
+        self._pipeline_panel.scheduler_run_now_requested.connect(self._on_scheduler_run_now)
+        # 인스타 업로드 + 이력
+        self._content_preview.upload_requested.connect(self._on_upload_requested)
+        self._content_preview.history_refresh_requested.connect(self._on_history_refresh)
 
     # ──────────────────────────────────────────────
     # 텔레그램 봇 제어
@@ -276,6 +287,106 @@ class MainWindow(QMainWindow):
         logger.error(f"파이프라인 오류: {msg}")
 
     # ──────────────────────────────────────────────
+    # 인스타그램 업로드
+    # ──────────────────────────────────────────────
+
+    def _on_upload_requested(self, reels_path: str, cardnews_paths: list, caption: str, source_hash: str):
+        if self._upload_worker and self._upload_worker.isRunning():
+            logger.warning("업로드가 이미 진행 중입니다.")
+            return
+
+        self._upload_worker = UploadWorker(
+            reels_path=reels_path,
+            cardnews_paths=cardnews_paths,
+            caption=caption,
+            source_hash=source_hash,
+        )
+        self._upload_worker.status_changed.connect(self._on_upload_status)
+        self._upload_worker.upload_completed.connect(self._on_upload_completed)
+        self._upload_worker.error_occurred.connect(self._on_upload_error)
+        self._upload_worker.start()
+        logger.info("인스타그램 업로드 시작")
+
+    def _on_upload_status(self, msg: str):
+        self._status_bar.showMessage(f"[업로드] {msg}")
+        self._content_preview.set_upload_status(msg)
+
+    def _on_upload_completed(self, result: dict):
+        errors = result.get("errors", [])
+        if errors:
+            msg = f"업로드 오류: {'; '.join(str(e) for e in errors)}"
+            self._content_preview.set_upload_status(msg, success=False)
+            self._status_bar.showMessage(f"[업로드 오류] {msg}")
+        else:
+            reels_url = result.get("reels_url", "")
+            carousel_url = result.get("carousel_url", "")
+            msg = f"업로드 완료! Reels: {reels_url}"
+            self._content_preview.set_upload_status(msg, success=True)
+            self._status_bar.showMessage(f"[업로드 완료] {msg}")
+            logger.success(f"업로드 완료: {reels_url} / {carousel_url}")
+        # 업로드 후 이력 자동 새로고침
+        self._on_history_refresh()
+
+    def _on_upload_error(self, msg: str):
+        self._content_preview.set_upload_status(f"오류: {msg}", success=False)
+        self._status_bar.showMessage(f"[업로드 오류] {msg}")
+        logger.error(f"업로드 오류: {msg}")
+
+    # ──────────────────────────────────────────────
+    # 업로드 이력
+    # ──────────────────────────────────────────────
+
+    def _on_history_refresh(self):
+        if self._history_worker and self._history_worker.isRunning():
+            return
+        self._history_worker = HistoryWorker()
+        self._history_worker.history_fetched.connect(self._content_preview.update_history)
+        self._history_worker.error_occurred.connect(
+            lambda e: logger.error(f"이력 조회 오류: {e}")
+        )
+        self._history_worker.start()
+
+    # ──────────────────────────────────────────────
+    # 스케줄러
+    # ──────────────────────────────────────────────
+
+    def _on_scheduler_start(self, hour: int, minute: int):
+        try:
+            from modules.scheduler import get_scheduler
+            self._scheduler = get_scheduler()
+            self._scheduler.start(hour=hour, minute=minute)
+            next_run = self._scheduler.get_next_run() or ""
+            self._pipeline_panel.set_scheduler_running(True, next_run)
+            self._status_bar.showMessage(f"[스케줄러] 매일 {hour:02d}:{minute:02d} 자동 실행 시작")
+            logger.success(f"스케줄러 시작: 매일 {hour:02d}:{minute:02d}")
+        except Exception as e:
+            logger.error(f"스케줄러 시작 실패: {e}")
+            self._status_bar.showMessage(f"[스케줄러 오류] {e}")
+
+    def _on_scheduler_stop(self):
+        try:
+            if self._scheduler:
+                self._scheduler.stop()
+            self._pipeline_panel.set_scheduler_running(False)
+            self._status_bar.showMessage("[스케줄러] 중지됨")
+            logger.info("스케줄러 중지")
+        except Exception as e:
+            logger.error(f"스케줄러 중지 실패: {e}")
+
+    def _on_scheduler_run_now(self):
+        try:
+            from modules.scheduler import get_scheduler
+            sched = get_scheduler()
+            # 별도 스레드에서 실행해 GUI 블로킹 방지
+            import threading
+            t = threading.Thread(target=sched.run_now, daemon=True)
+            t.start()
+            self._status_bar.showMessage("[스케줄러] 즉시 실행 시작...")
+            logger.info("스케줄러 즉시 실행 요청")
+        except Exception as e:
+            logger.error(f"즉시 실행 오류: {e}")
+
+    # ──────────────────────────────────────────────
     # 종료 처리
     # ──────────────────────────────────────────────
 
@@ -294,5 +405,15 @@ class MainWindow(QMainWindow):
         if self._trending_worker and self._trending_worker.isRunning():
             self._trending_worker.terminate()
             self._trending_worker.wait(1000)
+
+        if self._upload_worker and self._upload_worker.isRunning():
+            self._upload_worker.terminate()
+            self._upload_worker.wait(2000)
+
+        if self._scheduler:
+            try:
+                self._scheduler.stop()
+            except Exception:
+                pass
 
         event.accept()

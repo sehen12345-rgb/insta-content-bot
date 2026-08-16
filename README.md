@@ -9,7 +9,7 @@ Reels 영상 + 카드뉴스를 자동 생성합니다. 텔레그램 봇 또는 P
 
 ## 🔄 Status Tracker
 
-> 마지막 업데이트: 2026-08-13
+> 마지막 업데이트: 2026-08-16
 
 | 단계 | 모듈 | 상태 | 비고 |
 |------|------|------|------|
@@ -21,9 +21,10 @@ Reels 영상 + 카드뉴스를 자동 생성합니다. 텔레그램 봇 또는 P
 | PyQt6 GUI | `gui_main.py` | ✅ 완료 | 모니터링 패널 |
 | 환경 점검 | `check_env.py` | ✅ 완료 | API 키 연동 검증 스크립트 |
 | 파이프라인 테스트 | `test_pipeline.py` | ✅ 완료 | 버뮤다 삼각지대 테스트 포함 |
-| 인스타 자동 업로드 | — | 📌 예정 | Graph API 연동 |
-| 스케줄링 | — | 📌 예정 | APScheduler |
-| 중복 방지 DB | — | 📌 예정 | SQLite |
+| 인스타 자동 업로드 | `modules/uploader.py` | ✅ 완료 | instagrapi, GUI 업로드 버튼 |
+| 스케줄링 | `modules/scheduler.py` | ✅ 완료 | APScheduler, GUI 제어 패널 |
+| 중복 방지 DB | `modules/db.py` | ✅ 완료 | SQLite, PipelineWorker 연동 |
+| 업로드 이력 뷰 | `gui/widgets/content_preview.py` | ✅ 완료 | GUI 이력 탭 + 통계 |
 
 ### 최근 변경사항 (2026-08-13)
 
@@ -268,12 +269,16 @@ python gui_main.py
 - [x] `test_pipeline.py` — 전체 파이프라인 통합 테스트 (버뮤다 삼각지대) (2026-08-13)
 - [x] moviepy 버전 핀 (`<2.0.0`) 및 imageio-ffmpeg 추가 (2026-08-13)
 - [x] Claude 모델 `claude-sonnet-4-6`으로 업데이트 (2026-08-13)
+- [x] `modules/uploader.py` — instagrapi 기반 Reels + 카드뉴스 업로드 (2026-08-16)
+- [x] `modules/db.py` — SQLite 소재 중복 방지 + 업로드 이력 DB (2026-08-16)
+- [x] `modules/scheduler.py` — APScheduler 매일 자동 실행 (2026-08-16)
+- [x] GUI 인스타그램 업로드 버튼 (파이프라인 완료 후 즉시 게시 가능) (2026-08-16)
+- [x] GUI 스케줄러 제어 패널 (시각 설정, 시작/중지, 즉시 실행) (2026-08-16)
+- [x] GUI 업로드 이력 탭 (최근 30건 이력 + 통계) (2026-08-16)
+- [x] PipelineWorker DB 중복 체크 연동 (2026-08-16)
 
 ### 📌 추가 예정
 
-- [ ] **인스타그램 Graph API 자동 업로드** 연동
-- [ ] **스케줄링**: 매일 자동 실행 (APScheduler 또는 cron)
-- [ ] **소재 중복 방지 DB** (SQLite — 이미 처리한 Reddit URL 저장)
 - [ ] **성과 분석 대시보드** (좋아요/팔로워 추이 그래프)
 - [ ] **PyInstaller 단일 실행 파일** 패키징 (.exe)
 - [ ] 다국어 지원 (영어 버전 콘텐츠 생성)
@@ -311,3 +316,4 @@ python gui_main.py
 |------|------|
 | 2026-08-13 | 프로젝트 초기화, 전체 파일 구조, 모든 모듈 + GUI 구현 |
 | 2026-08-13 | `check_env.py`, `test_pipeline.py` 추가; moviepy 버전 핀; Claude 모델 업데이트 |
+| 2026-08-16 | GUI 인스타 업로드 버튼 + 이력 탭; 스케줄러 제어 패널; PipelineWorker DB 연동 |

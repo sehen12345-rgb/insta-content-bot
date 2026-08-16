@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QFrame,
     QSizePolicy,
+    QSpinBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -57,6 +58,9 @@ class PipelinePanel(QWidget):
 
     run_requested = pyqtSignal(str)
     trending_requested = pyqtSignal()
+    scheduler_start_requested = pyqtSignal(int, int)   # (hour, minute)
+    scheduler_stop_requested = pyqtSignal()
+    scheduler_run_now_requested = pyqtSignal()
 
     STEPS = [
         "Reddit 스크래핑",
@@ -135,6 +139,57 @@ class PipelinePanel(QWidget):
         self._status_label.setWordWrap(True)
         layout.addWidget(self._status_label)
 
+        self._add_separator(layout)
+
+        # ── 스케줄러 섹션 ──
+        sched_title = QLabel("자동 스케줄러")
+        sched_title.setObjectName("subtitle")
+        sched_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        layout.addWidget(sched_title)
+
+        # 시각 설정
+        time_row = QHBoxLayout()
+        time_row.setSpacing(6)
+        time_row.addWidget(QLabel("실행 시각:"))
+
+        self._hour_spin = QSpinBox()
+        self._hour_spin.setRange(0, 23)
+        self._hour_spin.setValue(9)
+        self._hour_spin.setSuffix("시")
+        self._hour_spin.setFixedWidth(65)
+        time_row.addWidget(self._hour_spin)
+
+        self._minute_spin = QSpinBox()
+        self._minute_spin.setRange(0, 59)
+        self._minute_spin.setValue(0)
+        self._minute_spin.setSuffix("분")
+        self._minute_spin.setFixedWidth(65)
+        time_row.addWidget(self._minute_spin)
+        time_row.addStretch()
+        layout.addLayout(time_row)
+
+        # 스케줄러 버튼 행
+        sched_btn_row = QHBoxLayout()
+        sched_btn_row.setSpacing(6)
+
+        self._sched_toggle_btn = QPushButton("스케줄러 시작")
+        self._sched_toggle_btn.setObjectName("success")
+        self._sched_toggle_btn.clicked.connect(self._on_sched_toggle)
+        sched_btn_row.addWidget(self._sched_toggle_btn)
+
+        self._sched_now_btn = QPushButton("지금 실행")
+        self._sched_now_btn.clicked.connect(self.scheduler_run_now_requested.emit)
+        sched_btn_row.addWidget(self._sched_now_btn)
+        layout.addLayout(sched_btn_row)
+
+        # 다음 실행 예정 라벨
+        self._next_run_label = QLabel("다음 실행: —")
+        self._next_run_label.setObjectName("subtitle")
+        self._next_run_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._next_run_label)
+
+        self._scheduler_running = False
+
         layout.addStretch()
 
     def _add_separator(self, layout: QVBoxLayout):
@@ -146,6 +201,14 @@ class PipelinePanel(QWidget):
     def _on_trending_clicked(self):
         self.set_status("Reddit 트렌딩 소재 수집 중...")
         self.trending_requested.emit()
+
+    def _on_sched_toggle(self):
+        if not self._scheduler_running:
+            h = self._hour_spin.value()
+            m = self._minute_spin.value()
+            self.scheduler_start_requested.emit(h, m)
+        else:
+            self.scheduler_stop_requested.emit()
 
     def _on_run_clicked(self):
         text = self._input_field.toPlainText().strip()
@@ -192,3 +255,17 @@ class PipelinePanel(QWidget):
             text = f"{post.get('title', '')}\n\n{post.get('selftext', '')}"
             self._input_field.setPlainText(text.strip())
             self.set_status(f"트렌딩 소재 {len(posts)}개 수집 완료. 원하는 소재로 수정 후 실행하세요.")
+
+    def set_scheduler_running(self, running: bool, next_run: str = ""):
+        """스케줄러 상태 반영"""
+        self._scheduler_running = running
+        if running:
+            self._sched_toggle_btn.setText("스케줄러 중지")
+            self._sched_toggle_btn.setObjectName("danger")
+            self._next_run_label.setText(f"다음 실행: {next_run}" if next_run else "다음 실행: 계산 중...")
+        else:
+            self._sched_toggle_btn.setText("스케줄러 시작")
+            self._sched_toggle_btn.setObjectName("success")
+            self._next_run_label.setText("다음 실행: —")
+        self._sched_toggle_btn.style().unpolish(self._sched_toggle_btn)
+        self._sched_toggle_btn.style().polish(self._sched_toggle_btn)
